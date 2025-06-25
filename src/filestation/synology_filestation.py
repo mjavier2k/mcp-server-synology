@@ -522,6 +522,36 @@ class SynologyFileStation:
                 pass  # Ignore cleanup errors
             raise e
     
+    def get_file_content(self, path: str) -> str:
+        """Get the content of a file."""
+        formatted_path = self._format_path(path)
+        
+        # Use the download API to get file content
+        response = requests.get(
+            f"{self.base_url}/webapi/entry.cgi",
+            params={
+                'api': 'SYNO.FileStation.Download',
+                'version': '2',
+                'method': 'download',
+                'path': formatted_path,
+                '_sid': self.session_id
+            },
+            verify=False,
+            stream=True
+        )
+        response.raise_for_status()
+        
+        # Check for API error in the headers (download API is special)
+        if 'Content-Type' in response.headers and 'application/json' in response.headers['Content-Type']:
+            error_data = response.json()
+            if not error_data.get('success'):
+                error_code = error_data.get('error', {}).get('code', 'unknown')
+                raise Exception(f"Synology API error: {error_code}")
+
+        # Assuming the content is text, read it
+        # For binary files, this would need to be handled differently
+        return response.text
+
     def move_file(self, source_path: str, destination_path: str, overwrite: bool = False) -> Dict[str, Any]:
         """Move a file or directory to a new location.
         
@@ -605,4 +635,4 @@ class SynologyFileStation:
                 )
             except:
                 pass  # Ignore cleanup errors
-            raise e 
+            raise e
