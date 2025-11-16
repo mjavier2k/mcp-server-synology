@@ -2,9 +2,10 @@
 
 ![Synology MCP Server](assets/banner.png)
 
-A Model Context Protocol (MCP) server for Synology NAS devices. Enables AI assistants to manage files and downloads through secure authentication and session management.
+A Model Context Protocol (MCP) server for Synology NAS devices. Enables AI assistants to manage files, downloads, and DNS configuration through secure authentication and session management.
 
-**🌟 NEW: Unified server supports both Claude/Cursor (stdio) and Xiaozhi (WebSocket) simultaneously!**
+**🌟 NEW: DNS Server management added - manage DNS zones and records through AI!**
+**🌟 Unified server supports both Claude/Cursor (stdio) and Xiaozhi (WebSocket) simultaneously!**
 
 ## 🚀 Quick Start with Docker
 
@@ -274,11 +275,52 @@ docker-compose up
 - **`ds_pause_tasks`** - Pause download tasks
   - `task_ids` (required): Array of task IDs
 - **`ds_resume_tasks`** - Resume paused tasks
-  - `task_ids` (required): Array of task IDs  
+  - `task_ids` (required): Array of task IDs
 - **`ds_delete_tasks`** - Delete download tasks
   - `task_ids` (required): Array of task IDs
   - `force_complete` (optional): Force delete completed
 - **`ds_get_statistics`** - Get download/upload statistics
+
+### 🌐 DNS Server Management
+- **`dns_list_zones`** - List all DNS zones
+- **`dns_get_zone`** - Get detailed zone information
+  - `zone_name` (required): Name of the DNS zone
+- **`dns_create_master_zone`** - Create a new master DNS zone
+  - `zone_name` (required): Zone name (e.g., 'example.com')
+  - `serial` (optional): Serial number (auto-generated if not provided)
+  - `refresh` (optional): Refresh interval in seconds (default: 10800)
+  - `retry` (optional): Retry interval in seconds (default: 3600)
+  - `expire` (optional): Expire time in seconds (default: 604800)
+  - `ttl` (optional): Default TTL in seconds (default: 86400)
+- **`dns_delete_zone`** - Delete a DNS zone
+  - `zone_name` (required): Name of the zone to delete
+- **`dns_enable_zone`** - Enable a DNS zone
+  - `zone_name` (required): Name of the zone to enable
+- **`dns_disable_zone`** - Disable a DNS zone
+  - `zone_name` (required): Name of the zone to disable
+- **`dns_list_records`** - List all DNS records in a zone
+  - `zone_name` (required): Name of the DNS zone
+- **`dns_create_record`** - Create a new DNS record
+  - `zone_name` (required): Name of the DNS zone
+  - `name` (required): Record name (e.g., 'www', '@' for root)
+  - `type` (required): Record type (A, AAAA, CNAME, MX, TXT, NS, PTR, SRV)
+  - `rdata` (required): Record data (e.g., IP address, hostname)
+  - `ttl` (optional): Time to live in seconds (default: 86400)
+- **`dns_update_record`** - Update an existing DNS record
+  - `zone_name` (required): Name of the DNS zone
+  - `record_key` (required): Unique identifier of the record
+  - `name` (optional): New record name
+  - `type` (optional): New record type
+  - `rdata` (optional): New record data
+  - `ttl` (optional): New TTL value
+- **`dns_delete_record`** - Delete a DNS record
+  - `zone_name` (required): Name of the DNS zone
+  - `record_key` (required): Unique identifier of the record to delete
+- **`dns_export_zone`** - Export zone file content
+  - `zone_name` (required): Name of the zone to export
+- **`dns_import_zone`** - Import zone from file content
+  - `zone_name` (required): Name of the zone
+  - `zone_content` (required): Zone file content to import
 
 ## ⚙️ Configuration Options
 
@@ -360,16 +402,89 @@ docker-compose up
 #### 🦦 Download Results
 ![Download Result](assets/download_result.png)
 
+### 🌐 DNS Management
+
+#### 📋 List DNS Zones
+
+```json
+// List all DNS zones
+{}
+
+// Response:
+[
+  {
+    "zone_name": "example.com",
+    "domain_name": "example.com",
+    "zone_type": "master",
+    "domain_type": "forward",
+    "zone_enable": true,
+    "is_readonly": false
+  }
+]
+```
+
+#### ➕ Create DNS Records
+
+```json
+// Create an A record
+{
+  "zone_name": "example.com",
+  "name": "www",
+  "type": "A",
+  "rdata": "192.168.1.100",
+  "ttl": 3600
+}
+
+// Create a CNAME record
+{
+  "zone_name": "example.com",
+  "name": "blog",
+  "type": "CNAME",
+  "rdata": "www.example.com"
+}
+
+// Create a TXT record
+{
+  "zone_name": "example.com",
+  "name": "@",
+  "type": "TXT",
+  "rdata": "v=spf1 include:_spf.google.com ~all"
+}
+```
+
+#### 🔍 List and Manage Records
+
+```json
+// List all records in a zone
+{
+  "zone_name": "example.com"
+}
+
+// Update a record
+{
+  "zone_name": "example.com",
+  "record_key": "record_12345",
+  "rdata": "192.168.1.101"
+}
+
+// Delete a record
+{
+  "zone_name": "example.com",
+  "record_key": "record_12345"
+}
+```
+
 ## ✨ Features
 
 - ✅ **Unified Entry Point** - Single `main.py` supports both stdio and WebSocket clients
 - ✅ **Environment Controlled** - Switch modes via `ENABLE_XIAOZHI` environment variable
 - ✅ **Multi-Client Support** - Simultaneous Claude/Cursor + Xiaozhi access
 - ✅ **Secure Authentication** - RSA encrypted password transmission
-- ✅ **Session Management** - Persistent sessions across multiple NAS devices  
+- ✅ **Session Management** - Persistent sessions across multiple NAS devices
 - ✅ **Complete File Operations** - Create, delete, list, search, rename, move files with detailed metadata
 - ✅ **Directory Management** - Recursive directory operations with safety checks
 - ✅ **Download Station** - Complete torrent and download management
+- ✅ **DNS Server Management** - Full DNS zone and record management (create, update, delete zones and records)
 - ✅ **Docker Support** - Easy containerized deployment
 - ✅ **Backward Compatible** - Existing configurations work unchanged
 - ✅ **Error Handling** - Comprehensive error reporting and recovery
@@ -385,7 +500,8 @@ mcp-server-synology/
 │   ├── multiclient_bridge.py # Multi-client bridge
 │   ├── auth/                 # Authentication modules
 │   ├── filestation/          # File operations
-│   └── downloadstation/      # Download management
+│   ├── downloadstation/      # Download management
+│   └── dnsserver/            # DNS Server management
 ├── docker-compose.yml        # Single service, environment-controlled
 ├── Dockerfile
 ├── requirements.txt

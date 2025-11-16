@@ -17,6 +17,7 @@ from config import config
 from auth import SynologyAuth
 from filestation import SynologyFileStation
 from downloadstation import SynologyDownloadStation
+from dnsserver import SynologyDNSServer
 
 
 class SynologyMCPServer:
@@ -25,9 +26,11 @@ class SynologyMCPServer:
     def __init__(self):
         self.server = Server(config.server_name)
         self.auth_instances: Dict[str, SynologyAuth] = {}
-        self.sessions: Dict[str, str] = {}  # base_url -> session_id
+        self.sessions: Dict[str, str] = {}  # base_url -> session_id (FileStation session)
+        self.dns_sessions: Dict[str, str] = {}  # base_url -> DNS session_id
         self.filestation_instances: Dict[str, SynologyFileStation] = {}
         self.downloadstation_instances: Dict[str, SynologyDownloadStation] = {}
+        self.dnsserver_instances: Dict[str, SynologyDNSServer] = {}
         self._setup_handlers()
     
     def _get_filestation(self, base_url: str) -> SynologyFileStation:
@@ -45,12 +48,40 @@ class SynologyMCPServer:
         """Get or create DownloadStation instance for a base URL."""
         if base_url not in self.sessions:
             raise Exception(f"No active session for {base_url}. Please login first.")
-        
+
         if base_url not in self.downloadstation_instances:
             session_id = self.sessions[base_url]
             self.downloadstation_instances[base_url] = SynologyDownloadStation(base_url, session_id)
-        
+
         return self.downloadstation_instances[base_url]
+
+    def _get_dnsserver(self, base_url: str) -> SynologyDNSServer:
+        """Get or create DNSServer instance for a base URL."""
+        # Check if we already have a DNS session
+        if base_url not in self.dns_sessions:
+            # Need to create a DNS Server session
+            if not config.has_synology_credentials():
+                raise Exception(f"No DNS Server session for {base_url} and no credentials configured. Please login first.")
+
+            # Create auth instance if needed
+            if base_url not in self.auth_instances:
+                self.auth_instances[base_url] = SynologyAuth(base_url)
+
+            auth = self.auth_instances[base_url]
+            synology_config = config.get_synology_config()
+            result = auth.login_dns_server(synology_config['username'], synology_config['password'])
+
+            if result.get("success"):
+                self.dns_sessions[base_url] = result["data"]["sid"]
+                print(f"✅ Created DNS Server session for {base_url}", file=sys.stderr)
+            else:
+                raise Exception(f"Failed to create DNS Server session: {result}")
+
+        if base_url not in self.dnsserver_instances:
+            session_id = self.dns_sessions[base_url]
+            self.dnsserver_instances[base_url] = SynologyDNSServer(base_url, session_id)
+
+        return self.dnsserver_instances[base_url]
     
     async def _auto_login_if_configured(self):
         """Automatically login if credentials are configured and auto_login is enabled."""
@@ -78,11 +109,13 @@ class SynologyMCPServer:
                     self.sessions[base_url] = session_id
                     print(f"✅ Auto-login successful for {base_url} (Session: {session_id[:8]}...)", file=sys.stderr)
                     
-                    # Clear any existing FileStation/DownloadStation instances to force recreation with new session
+                    # Clear any existing FileStation/DownloadStation/DNSServer instances to force recreation with new session
                     if base_url in self.filestation_instances:
                         del self.filestation_instances[base_url]
                     if base_url in self.downloadstation_instances:
                         del self.downloadstation_instances[base_url]
+                    if base_url in self.dnsserver_instances:
+                        del self.dnsserver_instances[base_url]
                 else:
                     error_msg = f"Auto-login failed for {base_url}: {result}"
                     print(f"❌ {error_msg}", file=sys.stderr)
@@ -201,6 +234,31 @@ class SynologyMCPServer:
                     return await self._handle_ds_get_statistics(arguments)
                 elif name == "ds_list_downloaded_files":
                     return await self._handle_ds_list_downloaded_files(arguments)
+                # DNS Server handlers
+                elif name == "dns_list_zones":
+                    return await self._handle_dns_list_zones(arguments)
+                elif name == "dns_get_zone":
+                    return await self._handle_dns_get_zone(arguments)
+                elif name == "dns_create_master_zone":
+                    return await self._handle_dns_create_master_zone(arguments)
+                elif name == "dns_delete_zone":
+                    return await self._handle_dns_delete_zone(arguments)
+                elif name == "dns_enable_zone":
+                    return await self._handle_dns_enable_zone(arguments)
+                elif name == "dns_disable_zone":
+                    return await self._handle_dns_disable_zone(arguments)
+                elif name == "dns_list_records":
+                    return await self._handle_dns_list_records(arguments)
+                elif name == "dns_create_record":
+                    return await self._handle_dns_create_record(arguments)
+                elif name == "dns_update_record":
+                    return await self._handle_dns_update_record(arguments)
+                elif name == "dns_delete_record":
+                    return await self._handle_dns_delete_record(arguments)
+                elif name == "dns_export_zone":
+                    return await self._handle_dns_export_zone(arguments)
+                elif name == "dns_import_zone":
+                    return await self._handle_dns_import_zone(arguments)
                 else:
                     raise ValueError(f"Unknown tool: {name}")
             except Exception as e:
@@ -239,11 +297,13 @@ class SynologyMCPServer:
             session_id = result["data"]["sid"]
             self.sessions[base_url] = session_id
             
-            # Clear any existing FileStation/DownloadStation instances to force recreation with new session
+            # Clear any existing FileStation/DownloadStation/DNSServer instances to force recreation with new session
             if base_url in self.filestation_instances:
                 del self.filestation_instances[base_url]
             if base_url in self.downloadstation_instances:
                 del self.downloadstation_instances[base_url]
+            if base_url in self.dnsserver_instances:
+                del self.dnsserver_instances[base_url]
             
             return [types.TextContent(
                 type="text",
@@ -972,6 +1032,283 @@ class SynologyMCPServer:
                     },
                     "required": []
                 }
+            ),
+            # DNS Server Tools
+            types.Tool(
+                name="dns_list_zones",
+                description="List all DNS zones on the Synology DNS Server",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        }
+                    },
+                    "required": []
+                }
+            ),
+            types.Tool(
+                name="dns_get_zone",
+                description="Get detailed information about a specific DNS zone",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone"
+                        }
+                    },
+                    "required": ["zone_name"]
+                }
+            ),
+            types.Tool(
+                name="dns_create_master_zone",
+                description="Create a new master DNS zone",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone to create (e.g., 'example.com')"
+                        },
+                        "serial": {
+                            "type": "integer",
+                            "description": "Serial number (optional, auto-generated if not provided)"
+                        },
+                        "refresh": {
+                            "type": "integer",
+                            "description": "Refresh interval in seconds (default: 10800)"
+                        },
+                        "retry": {
+                            "type": "integer",
+                            "description": "Retry interval in seconds (default: 3600)"
+                        },
+                        "expire": {
+                            "type": "integer",
+                            "description": "Expire time in seconds (default: 604800)"
+                        },
+                        "ttl": {
+                            "type": "integer",
+                            "description": "Default TTL in seconds (default: 86400)"
+                        }
+                    },
+                    "required": ["zone_name"]
+                }
+            ),
+            types.Tool(
+                name="dns_delete_zone",
+                description="Delete a DNS zone",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone to delete"
+                        }
+                    },
+                    "required": ["zone_name"]
+                }
+            ),
+            types.Tool(
+                name="dns_enable_zone",
+                description="Enable a DNS zone",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone to enable"
+                        }
+                    },
+                    "required": ["zone_name"]
+                }
+            ),
+            types.Tool(
+                name="dns_disable_zone",
+                description="Disable a DNS zone",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone to disable"
+                        }
+                    },
+                    "required": ["zone_name"]
+                }
+            ),
+            types.Tool(
+                name="dns_list_records",
+                description="List all DNS records in a zone",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone"
+                        }
+                    },
+                    "required": ["zone_name"]
+                }
+            ),
+            types.Tool(
+                name="dns_create_record",
+                description="Create a new DNS record in a zone. Supports A, AAAA, CNAME, MX, TXT, NS, PTR, and SRV record types.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Record name (e.g., 'www', '@' for root, 'subdomain')"
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "Record type (A, AAAA, CNAME, MX, TXT, NS, PTR, SRV)"
+                        },
+                        "rdata": {
+                            "type": "string",
+                            "description": "Record data (e.g., IP address for A record, hostname for CNAME)"
+                        },
+                        "ttl": {
+                            "type": "integer",
+                            "description": "Time to live in seconds (default: 86400)"
+                        }
+                    },
+                    "required": ["zone_name", "name", "type", "rdata"]
+                }
+            ),
+            types.Tool(
+                name="dns_update_record",
+                description="Update an existing DNS record",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone"
+                        },
+                        "record_key": {
+                            "type": "string",
+                            "description": "Unique identifier of the record to update"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New record name (optional)"
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "New record type (optional)"
+                        },
+                        "rdata": {
+                            "type": "string",
+                            "description": "New record data (optional)"
+                        },
+                        "ttl": {
+                            "type": "integer",
+                            "description": "New TTL value (optional)"
+                        }
+                    },
+                    "required": ["zone_name", "record_key"]
+                }
+            ),
+            types.Tool(
+                name="dns_delete_record",
+                description="Delete a DNS record from a zone",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone"
+                        },
+                        "record_key": {
+                            "type": "string",
+                            "description": "Unique identifier of the record to delete"
+                        }
+                    },
+                    "required": ["zone_name", "record_key"]
+                }
+            ),
+            types.Tool(
+                name="dns_export_zone",
+                description="Export a DNS zone file content",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone to export"
+                        }
+                    },
+                    "required": ["zone_name"]
+                }
+            ),
+            types.Tool(
+                name="dns_import_zone",
+                description="Import a DNS zone from zone file content",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "zone_name": {
+                            "type": "string",
+                            "description": "Name of the DNS zone"
+                        },
+                        "zone_content": {
+                            "type": "string",
+                            "description": "Zone file content to import"
+                        }
+                    },
+                    "required": ["zone_name", "zone_content"]
+                }
             )
         ]
 
@@ -1027,6 +1364,31 @@ class SynologyMCPServer:
                 return await self._handle_ds_get_statistics(arguments)
             elif name == "ds_list_downloaded_files":
                 return await self._handle_ds_list_downloaded_files(arguments)
+            # DNS Server handlers
+            elif name == "dns_list_zones":
+                return await self._handle_dns_list_zones(arguments)
+            elif name == "dns_get_zone":
+                return await self._handle_dns_get_zone(arguments)
+            elif name == "dns_create_master_zone":
+                return await self._handle_dns_create_master_zone(arguments)
+            elif name == "dns_delete_zone":
+                return await self._handle_dns_delete_zone(arguments)
+            elif name == "dns_enable_zone":
+                return await self._handle_dns_enable_zone(arguments)
+            elif name == "dns_disable_zone":
+                return await self._handle_dns_disable_zone(arguments)
+            elif name == "dns_list_records":
+                return await self._handle_dns_list_records(arguments)
+            elif name == "dns_create_record":
+                return await self._handle_dns_create_record(arguments)
+            elif name == "dns_update_record":
+                return await self._handle_dns_update_record(arguments)
+            elif name == "dns_delete_record":
+                return await self._handle_dns_delete_record(arguments)
+            elif name == "dns_export_zone":
+                return await self._handle_dns_export_zone(arguments)
+            elif name == "dns_import_zone":
+                return await self._handle_dns_import_zone(arguments)
             else:
                 raise ValueError(f"Unknown tool: {name}")
         except Exception as e:
@@ -1120,12 +1482,199 @@ class SynologyMCPServer:
                     del self.filestation_instances[base_url]
                 if base_url in self.downloadstation_instances:
                     del self.downloadstation_instances[base_url]
+                if base_url in self.dnsserver_instances:
+                    del self.dnsserver_instances[base_url]
                     
             except Exception as e:
                 print(f"❌ Exception during cleanup for {base_url}: {e}", file=sys.stderr)
                 cleanup_results.append(f"❌ {base_url}: Exception - {str(e)}")
         
         return cleanup_results
+
+    # ====================================================================
+    # DNS SERVER HANDLERS
+    # ====================================================================
+
+    async def _handle_dns_list_zones(self, arguments: dict) -> list[types.TextContent]:
+        """Handle listing DNS zones."""
+        base_url = self._get_base_url(arguments)
+        dns = self._get_dnsserver(base_url)
+
+        zones = dns.list_zones()
+
+        return [types.TextContent(
+            type="text",
+            text=f"DNS Zones:\n{json.dumps(zones, indent=2)}"
+        )]
+
+    async def _handle_dns_get_zone(self, arguments: dict) -> list[types.TextContent]:
+        """Handle getting DNS zone details."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        dns = self._get_dnsserver(base_url)
+
+        zone = dns.get_zone(zone_name)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Zone Details for '{zone_name}':\n{json.dumps(zone, indent=2)}"
+        )]
+
+    async def _handle_dns_create_master_zone(self, arguments: dict) -> list[types.TextContent]:
+        """Handle creating a master DNS zone."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        dns = self._get_dnsserver(base_url)
+
+        # Optional parameters
+        params = {
+            'zone_name': zone_name
+        }
+        for key in ['serial', 'refresh', 'retry', 'expire', 'ttl']:
+            if key in arguments:
+                params[key] = arguments[key]
+
+        result = dns.create_master_zone(**params)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Master zone '{zone_name}' created successfully:\n{json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_dns_delete_zone(self, arguments: dict) -> list[types.TextContent]:
+        """Handle deleting a DNS zone."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        dns = self._get_dnsserver(base_url)
+
+        result = dns.delete_zone(zone_name)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Zone '{zone_name}' deleted successfully:\n{json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_dns_enable_zone(self, arguments: dict) -> list[types.TextContent]:
+        """Handle enabling a DNS zone."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        dns = self._get_dnsserver(base_url)
+
+        result = dns.enable_zone(zone_name)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Zone '{zone_name}' enabled successfully:\n{json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_dns_disable_zone(self, arguments: dict) -> list[types.TextContent]:
+        """Handle disabling a DNS zone."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        dns = self._get_dnsserver(base_url)
+
+        result = dns.disable_zone(zone_name)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Zone '{zone_name}' disabled successfully:\n{json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_dns_list_records(self, arguments: dict) -> list[types.TextContent]:
+        """Handle listing DNS records in a zone."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        dns = self._get_dnsserver(base_url)
+
+        records = dns.list_records(zone_name)
+
+        return [types.TextContent(
+            type="text",
+            text=f"DNS Records in zone '{zone_name}':\n{json.dumps(records, indent=2)}"
+        )]
+
+    async def _handle_dns_create_record(self, arguments: dict) -> list[types.TextContent]:
+        """Handle creating a DNS record."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        name = arguments["name"]
+        record_type = arguments["type"]
+        rdata = arguments["rdata"]
+        ttl = arguments.get("ttl", 86400)
+        dns = self._get_dnsserver(base_url)
+
+        result = dns.create_record(zone_name, name, record_type, rdata, ttl)
+
+        return [types.TextContent(
+            type="text",
+            text=f"DNS record created in zone '{zone_name}':\n"
+                 f"Name: {name}\nType: {record_type}\nData: {rdata}\nTTL: {ttl}\n"
+                 f"Result: {json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_dns_update_record(self, arguments: dict) -> list[types.TextContent]:
+        """Handle updating a DNS record."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        record_key = arguments["record_key"]
+        dns = self._get_dnsserver(base_url)
+
+        # Build update params
+        update_params = {
+            'zone_name': zone_name,
+            'record_key': record_key
+        }
+        for key in ['name', 'type', 'rdata', 'ttl']:
+            if key in arguments:
+                update_params[key if key != 'type' else 'record_type'] = arguments[key]
+
+        result = dns.update_record(**update_params)
+
+        return [types.TextContent(
+            type="text",
+            text=f"DNS record updated in zone '{zone_name}':\n{json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_dns_delete_record(self, arguments: dict) -> list[types.TextContent]:
+        """Handle deleting a DNS record."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        record_key = arguments["record_key"]
+        dns = self._get_dnsserver(base_url)
+
+        result = dns.delete_record(zone_name, record_key)
+
+        return [types.TextContent(
+            type="text",
+            text=f"DNS record deleted from zone '{zone_name}':\n{json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_dns_export_zone(self, arguments: dict) -> list[types.TextContent]:
+        """Handle exporting a DNS zone."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        dns = self._get_dnsserver(base_url)
+
+        zone_content = dns.export_zone(zone_name)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Exported zone '{zone_name}':\n\n{zone_content}"
+        )]
+
+    async def _handle_dns_import_zone(self, arguments: dict) -> list[types.TextContent]:
+        """Handle importing a DNS zone."""
+        base_url = self._get_base_url(arguments)
+        zone_name = arguments["zone_name"]
+        zone_content = arguments["zone_content"]
+        dns = self._get_dnsserver(base_url)
+
+        result = dns.import_zone(zone_name, zone_content)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Zone '{zone_name}' imported successfully:\n{json.dumps(result, indent=2)}"
+        )]
 
 
 async def main():

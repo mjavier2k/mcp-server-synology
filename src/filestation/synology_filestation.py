@@ -30,12 +30,13 @@ class SynologyFileStation:
         if use_post:
             # For POST requests, ensure UTF-8 encoding for Unicode characters
             response = requests.post(
-                self.api_url, 
+                self.api_url,
                 data=request_params,
-                headers={'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'}
+                headers={'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'},
+                verify=False
             )
         else:
-            response = requests.get(self.api_url, params=request_params)
+            response = requests.get(self.api_url, params=request_params, verify=False)
         response.raise_for_status()
         
         data = response.json()
@@ -70,7 +71,7 @@ class SynologyFileStation:
             **params
         }
         
-        response = requests.post(self.api_url, params=request_params, files=files)
+        response = requests.post(self.api_url, params=request_params, files=files, verify=False)
         response.raise_for_status()
         
         data = response.json()
