@@ -58,6 +58,10 @@ class SynologyAuth:
     def login_download_station(self, username: str, password: str) -> Dict[str, Any]:
         """Authenticate specifically for Download Station."""
         return self.login_with_session(username, password, 'DownloadStation')
+
+    def login_dns_server(self, username: str, password: str) -> Dict[str, Any]:
+        """Authenticate specifically for DNS Server."""
+        return self.login_with_session(username, password, 'DNSServer')
     
     def logout(self, session_id: Optional[str] = None, session_type: Optional[str] = None) -> Dict[str, Any]:
         """
